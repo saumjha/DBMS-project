@@ -1,0 +1,125 @@
+"""PlaceMate - College Placement Management System (stdlib only: Python 3 + SQLite).
+Run:  python app.py   then open http://localhost:8000
+Needs placement.sql in the same folder (creates placement.db on first run)."""
+import json, os, sqlite3
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DB = os.path.join(HERE, "placement.db")
+
+# table -> (primary key, editable columns)
+TABLES = {
+    "student":     ("student_id", ["name", "email", "branch", "cgpa", "backlogs"]),
+    "company":     ("company_id", ["name", "sector", "location"]),
+    "drive":       ("drive_id",   ["company_id", "role", "package_lpa", "min_cgpa", "drive_date"]),
+    "application": ("app_id",     ["student_id", "drive_id", "status"]),
+    "offer":       ("offer_id",   ["app_id", "ctc_lpa", "joining_date"]),
+}
+QUERIES = {
+    "eligible": ("SELECT d.* FROM drive d, student s WHERE s.student_id=? AND s.cgpa>=d.min_cgpa", ["student_id"]),
+    "view_eligible": ("SELECT drive_id, role, min_cgpa FROM eligible_drives WHERE student_id=?", ["student_id"]),
+    "packages": ("SELECT MAX(ctc_lpa) AS highest, AVG(ctc_lpa) AS average FROM offer", []),
+    "no_applications": ("SELECT name FROM student WHERE student_id NOT IN (SELECT student_id FROM application)", []),
+    "branch_placed": ("SELECT s.branch, COUNT(DISTINCT s.student_id) AS placed FROM student s "
+                      "JOIN application a USING(student_id) WHERE a.status='Selected' GROUP BY s.branch", []),
+}
+
+def conn():
+    c = sqlite3.connect(DB)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    return c
+
+def init_db():
+    if not os.path.exists(DB):
+        c = sqlite3.connect(DB)
+        c.executescript(open(os.path.join(HERE, "placement.sql")).read())
+        c.commit(); c.close()
+
+def rows(c, sql, args=()):
+    return [dict(r) for r in c.execute(sql, args).fetchall()]
+
+class H(BaseHTTPRequestHandler):
+    def send(self, code, body, ctype="application/json"):
+        data = body if isinstance(body, bytes) else (body if isinstance(body, str) else json.dumps(body)).encode()
+        self.send_response(code); self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+
+    def body(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        return json.loads(self.rfile.read(n) or b"{}")
+
+    def handle_api(self, method):
+        u = urlparse(self.path); parts = [p for p in u.path.split("/") if p]  # api, table[, id]
+        c = conn()
+        try:
+            if parts[1] == "query":
+                sql, params = QUERIES[parts[2]]; q = parse_qs(u.query)
+                return self.send(200, rows(c, sql, [q[p][0] for p in params]))
+            t = parts[1]; pk, cols = TABLES[t]
+            if method == "GET":
+                return self.send(200, rows(c, f"SELECT * FROM {t} ORDER BY {pk}"))
+            if method == "POST":
+                d = self.body(); use = [k for k in cols if k in d and d[k] != ""]
+                cur = c.execute(f"INSERT INTO {t}({','.join(use)}) VALUES ({','.join('?'*len(use))})", [d[k] for k in use])
+                c.commit(); return self.send(201, {"id": cur.lastrowid})
+            rid = parts[2]
+            if method == "PUT":
+                d = self.body(); use = [k for k in cols if k in d]
+                c.execute(f"UPDATE {t} SET {','.join(k+'=?' for k in use)} WHERE {pk}=?", [d[k] if d[k] != "" else None for k in use] + [rid])
+                c.commit(); return self.send(200, {"ok": True})
+            if method == "DELETE":
+                c.execute(f"DELETE FROM {t} WHERE {pk}=?", [rid]); c.commit()
+                return self.send(200, {"ok": True})
+            self.send(405, {"error": "method not allowed"})
+        except (sqlite3.Error, KeyError, IndexError, ValueError) as e:
+            c.rollback(); self.send(400, {"error": f"{type(e).__name__}: {e}"})
+        finally:
+            c.close()
+
+    def do_GET(self):
+        if self.path.startswith("/api/"): return self.handle_api("GET")
+        self.send(200, PAGE, "text/html; charset=utf-8")
+    def do_POST(self): self.handle_api("POST")
+    def do_PUT(self): self.handle_api("PUT")
+    def do_DELETE(self): self.handle_api("DELETE")
+    def log_message(self, *a): pass
+
+PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PlaceMate - Placement Management System</title><style>
+:root{--bg:#eaf2fb;--navy:#0b1f3a;--blue:#5aa9ff;--orange:#ff7a1a;--lime:#b6f04a}
+body{margin:0;font-family:system-ui,Arial,sans-serif;background:var(--bg);color:var(--navy)}
+header{background:var(--navy);color:#fff;padding:14px 5vw}header b{font-size:24px;font-style:italic}header small{display:block;color:var(--lime)}
+main{padding:20px 5vw}button,input,select{font:600 12px system-ui;border:2px solid var(--navy);border-radius:6px;padding:7px 10px;background:#fff;color:var(--navy)}
+button{cursor:pointer}.on{background:var(--navy);color:#fff}.go{background:var(--lime)}.del{background:#ffd9d9}
+.card{background:#fff;border:2px solid var(--navy);border-radius:8px;box-shadow:5px 5px 0 var(--navy);padding:14px;margin:14px 0}
+table{border-collapse:collapse;width:100%;font-size:13px}th{background:var(--blue);text-align:left}th,td{padding:7px 9px;border-bottom:1px solid #cfe3fa;white-space:nowrap}
+.w{overflow-x:auto}#msg{font-weight:700;margin:8px 0}.ok{color:#1a8f3c}.err{color:#c0262d}form{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+</style></head><body><header><b>PLACEMATE</b><small>College Placement Management System - Class CSAI1</small></header><main>
+<div id="tabs"></div><div class="card"><form id="f"></form><div id="msg"></div><div class="w" id="t"></div></div>
+<div class="card"><b>Queries</b> student id: <input id="sid" value="1" size="3">
+<button onclick="q('eligible')">Eligible drives</button><button onclick="q('view_eligible')">View: eligible_drives</button>
+<button onclick="q('packages')">Highest/avg package</button><button onclick="q('no_applications')">No applications</button>
+<button onclick="q('branch_placed')">Placed by branch</button><div class="w" id="qr"></div></div></main><script>
+const T={student:['name','email','branch','cgpa','backlogs'],company:['name','sector','location'],drive:['company_id','role','package_lpa','min_cgpa','drive_date'],application:['student_id','drive_id','status'],offer:['app_id','ctc_lpa','joining_date']};
+const PK={student:'student_id',company:'company_id',drive:'drive_id',application:'app_id',offer:'offer_id'};
+let cur='student',edit=null,data=[];const $=i=>document.getElementById(i);
+const say=(m,ok)=>{$('msg').className=ok?'ok':'err';$('msg').textContent=(ok?'OK: ':'Error: ')+m};
+const api=async(m,u,b)=>{const r=await fetch(u,{method:m,headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});const j=await r.json();if(!r.ok)throw new Error(j.error);return j};
+const tbl=r=>r.length?`<table><tr>${Object.keys(r[0]).map(k=>`<th>${k}</th>`).join('')}</tr>${r.map(x=>`<tr>${Object.values(x).map(v=>`<td>${v??''}</td>`).join('')}</tr>`).join('')}</table>`:'0 rows';
+async function load(){data=await api('GET','/api/'+cur);
+ $('tabs').innerHTML=Object.keys(T).map(k=>`<button class="${k==cur?'on':''}" onclick="cur='${k}';edit=null;load()">${k}</button> `).join('');
+ const row=edit!==null?data.find(d=>d[PK[cur]]==edit):{};
+ $('f').innerHTML=T[cur].map(c=>`<input id="f_${c}" placeholder="${c}" value="${row&&row[c]!=null?row[c]:''}">`).join('')+`<button class="go" type="submit">${edit!==null?'SAVE':'ADD'}</button>`+(edit!==null?'<button type="button" onclick="edit=null;load()">CANCEL</button>':'');
+ $('t').innerHTML=`<table><tr>${Object.keys(data[0]||{[PK[cur]]:1}).map(k=>`<th>${k}</th>`).join('')}<th>actions</th></tr>${data.map(d=>`<tr>${Object.values(d).map(v=>`<td>${v??''}</td>`).join('')}<td><button onclick="edit=${d[PK[cur]]};load()">Edit</button> <button class="del" onclick="del(${d[PK[cur]]})">Delete</button></td></tr>`).join('')}</table>`}
+$('f').onsubmit=async e=>{e.preventDefault();const b={};T[cur].forEach(c=>b[c]=$('f_'+c).value.trim());
+ try{if(edit!==null){await api('PUT','/api/'+cur+'/'+edit,b);say('row updated',1);edit=null}else{const r=await api('POST','/api/'+cur,b);say('row inserted (id '+r.id+')',1)}await load()}catch(x){say(x.message,0)}};
+async function del(id){if(!confirm('Delete row '+id+'?'))return;try{await api('DELETE','/api/'+cur+'/'+id);say('row deleted',1);load()}catch(x){say(x.message,0)}}
+async function q(n){try{$('qr').innerHTML=tbl(await api('GET','/api/query/'+n+'?student_id='+$('sid').value))}catch(x){say(x.message,0)}}
+load();</script></body></html>"""
+
+if __name__ == "__main__":
+    init_db()
+    print("PlaceMate running at http://localhost:8000  (Ctrl+C to stop)")
+    ThreadingHTTPServer(("", 8000), H).serve_forever()
