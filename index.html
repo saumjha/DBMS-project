@@ -111,15 +111,4 @@ const tbl=r=>r.length?`<table><tr>${Object.keys(r[0]).map(k=>`<th>${k}</th>`).jo
 async function load(){data=await api('GET','/api/'+cur);
  $('tabs').innerHTML=Object.keys(T).map(k=>`<button class="${k==cur?'on':''}" onclick="cur='${k}';edit=null;load()">${k}</button> `).join('');
  const row=edit!==null?data.find(d=>d[PK[cur]]==edit):{};
- $('f').innerHTML=T[cur].map(c=>`<input id="f_${c}" placeholder="${c}" value="${row&&row[c]!=null?row[c]:''}">`).join('')+`<button class="go" type="submit">${edit!==null?'SAVE':'ADD'}</button>`+(edit!==null?'<button type="button" onclick="edit=null;load()">CANCEL</button>':'');
- $('t').innerHTML=`<table><tr>${Object.keys(data[0]||{[PK[cur]]:1}).map(k=>`<th>${k}</th>`).join('')}<th>actions</th></tr>${data.map(d=>`<tr>${Object.values(d).map(v=>`<td>${v??''}</td>`).join('')}<td><button onclick="edit=${d[PK[cur]]};load()">Edit</button> <button class="del" onclick="del(${d[PK[cur]]})">Delete</button></td></tr>`).join('')}</table>`}
-$('f').onsubmit=async e=>{e.preventDefault();const b={};T[cur].forEach(c=>b[c]=$('f_'+c).value.trim());
- try{if(edit!==null){await api('PUT','/api/'+cur+'/'+edit,b);say('row updated',1);edit=null}else{const r=await api('POST','/api/'+cur,b);say('row inserted (id '+r.id+')',1)}await load()}catch(x){say(x.message,0)}};
-async function del(id){if(!confirm('Delete row '+id+'?'))return;try{await api('DELETE','/api/'+cur+'/'+id);say('row deleted',1);load()}catch(x){say(x.message,0)}}
-async function q(n){try{$('qr').innerHTML=tbl(await api('GET','/api/query/'+n+'?student_id='+$('sid').value))}catch(x){say(x.message,0)}}
-load();</script></body></html>"""
-
-if __name__ == "__main__":
-    init_db()
-    print("PlaceMate running at http://localhost:8000  (Ctrl+C to stop)")
-    ThreadingHTTPServer(("", 8000), H).serve_forever()
+ $('f').innerHTML=T[cur].map(c=>`<input id="f_${c}" placeholder="${c}" value="${
